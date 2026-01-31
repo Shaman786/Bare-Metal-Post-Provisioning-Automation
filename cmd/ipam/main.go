@@ -3,109 +3,94 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"net"
 	"os"
 
-	"gopkg.in/yaml.v3"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/allocator"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/config"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/render"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/report"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/state"
+	"github.com/Shaman786/Bare-Metal-Post-Provisioning-Automation/internal/validate"
 )
 
-type IPPool struct {
-	Name     string   `yaml:"name"`
-	CIDR     string   `yaml:"cidr"`
-	Gateway  string   `yaml:"gateway"`
-	DNS      []string `yaml:"dns"`
-	Reserved []string `yaml:"reserved"`
-}
-
-type IPPoolConfig struct {
-	Pools []IPPool `yaml:"pools"`
-}
-
-type State struct {
-	AssignedIPs []string `json:"assigned_ips"`
-}
-
 func main() {
-	configFile := "config/ip-pools.yaml"
-	stateFile := "internal/state/assigned.json"
-
-	cfg := loadConfig(configFile)
-	state := loadState(stateFile)
-
-	pool := cfg.Pools[0] // MVP: single pool
-	ip := allocateIP(pool, state)
-
-	state.AssignedIPs = append(state.AssignedIPs, ip)
-	saveState(stateFile, state)
-
-	output := map[string]interface{}{
-		"ip":      ip,
-		"gateway": pool.Gateway,
-		"dns":     pool.DNS,
+	if len(os.Args) < 2 {
+		log.Fatal("usage: ipam <allocate|release> [ip]")
 	}
 
-	json.NewEncoder(os.Stdout).Encode(output)
-}
+	cfg := config.Load("config/ip-pools.yaml")
+	pool := cfg.Pools[0]
 
-func loadConfig(path string) IPPoolConfig {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		log.Fatal(err)
-	}
+	sm := state.Load("internal/state/assigned.json")
+	defer sm.Close()
 
-	var cfg IPPoolConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		log.Fatal(err)
-	}
-	return cfg
-}
+	st := sm.State
 
-func loadState(path string) State {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return State{}
-	}
+	switch os.Args[1] {
 
-	var state State
-	json.Unmarshal(data, &state)
-	return state
-}
+	case "allocate":
+		ip := allocator.Allocate(pool, st.AssignedIPs)
+		st.AssignedIPs = append(st.AssignedIPs, ip)
+		sm.Save()
 
-func saveState(path string, state State) {
-	data, _ := json.MarshalIndent(state, "", "  ")
-	os.WriteFile(path, data, 0o644)
-}
+		json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+			"ip":      ip,
+			"gateway": pool.Gateway,
+			"dns":     pool.DNS,
+		})
 
-func allocateIP(pool IPPool, state State) string {
-	_, network, err := net.ParseCIDR(pool.CIDR)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	reserved := make(map[string]bool)
-	for _, ip := range pool.Reserved {
-		reserved[ip] = true
-	}
-	for _, ip := range state.AssignedIPs {
-		reserved[ip] = true
-	}
-
-	for ip := network.IP.Mask(network.Mask); network.Contains(ip); incIP(ip) {
-		ipStr := ip.String()
-		if !reserved[ipStr] {
-			return ipStr
+	case "release":
+		if len(os.Args) != 3 {
+			log.Fatal("usage: ipam release <ip>")
 		}
-	}
 
-	log.Fatal("No available IPs")
-	return ""
-}
+		ip := os.Args[2]
+		allocator.ValidateIPBelongsToPool(ip, pool)
+		sm.Release(&st, ip)
+		sm.Save()
 
-func incIP(ip net.IP) {
-	for j := len(ip) - 1; j >= 0; j-- {
-		ip[j]++
-		if ip[j] > 0 {
-			break
+		log.Printf("released IP %s\n", ip)
+
+	case "cloud-init":
+		ip := allocator.Allocate(pool, st.AssignedIPs)
+		st.AssignedIPs = append(st.AssignedIPs, ip)
+		sm.Save()
+
+		prefix, _ := render.CIDRPrefix(pool.CIDR)
+
+		cfg := render.NetworkConfig{
+			Interface: "eth0",
+			IP:        ip,
+			Gateway:   pool.Gateway,
+			DNS:       pool.DNS,
+			CIDR:      prefix,
 		}
+		out, err := render.CloudInitNetwork(cfg)
+		if err != nil {
+			log.Fatal(err)
+		}
+		os.Stdout.Write([]byte(out))
+
+	case "validate":
+		const StatusReady = "READY"
+		if len(os.Args) != 3 {
+			log.Fatal("usage: ipam validate <ip>")
+		}
+
+		ip := os.Args[2]
+
+		ok := validate.SSHReachable(ip)
+
+		if !ok {
+			log.Fatalf("validation failed for %s", ip)
+		}
+		if err := report.Write(
+			"reports/"+ip+".json", ip, StatusReady,
+		); err != nil {
+			log.Fatalf("failed to write report for %s: %v", ip, err)
+		}
+
+	default:
+		log.Fatalf("unknown command: %s", os.Args[1])
 	}
 }

@@ -1,0 +1,17 @@
+---
+- name: Post-provision bare-metal server
+  hosts: all
+  become: true
+  vars_files:
+    - vars/server.yml
+
+  tasks:
+    - name: Configure static network (cloud-init already applied)
+      debug:
+        msg: "Server {{ inventory_hostname }} configured with IP {{ server_ip }}"
+
+    - name: Verify SSH connectivity
+      wait_for:
+        host: "{{ server_ip }}"
+        port: 22
+        timeout: 30
