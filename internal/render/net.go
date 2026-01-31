@@ -2,6 +2,7 @@ package render
 
 import (
 	"net"
+	"strconv"
 )
 
 func CIDRPrefix(cidr string) (string, error) {
@@ -10,5 +11,5 @@ func CIDRPrefix(cidr string) (string, error) {
 		return "", err
 	}
 	ones, _ := network.Mask.Size()
-	return string(rune(ones)), nil
+	return strconv.Itoa(ones), nil
 }

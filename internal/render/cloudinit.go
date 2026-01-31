@@ -1,3 +1,5 @@
+// Package render handles the generation of configuration files (e.g., cloud-init)
+// and network settings formatting.
 package render
 
 import (

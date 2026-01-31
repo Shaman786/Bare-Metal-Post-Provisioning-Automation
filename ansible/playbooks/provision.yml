@@ -7,11 +7,11 @@
 
   tasks:
     - name: Configure static network (cloud-init already applied)
-      debug:
+      ansible.builtin.debug:
         msg: "Server {{ inventory_hostname }} configured with IP {{ server_ip }}"
 
     - name: Verify SSH connectivity
-      wait_for:
+      ansible.builtin.wait_for:
         host: "{{ server_ip }}"
         port: 22
         timeout: 30

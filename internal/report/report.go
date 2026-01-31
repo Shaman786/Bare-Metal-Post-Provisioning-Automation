@@ -1,3 +1,5 @@
+// Package report handles the generation and persistence of provisioning reports
+// (JSON status files) for tracking allocated resources.
 package report
 
 import (
